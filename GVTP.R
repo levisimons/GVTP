@@ -50,9 +50,10 @@ StudyArea <- sf::st_read("GVTPStudyArea.shp")
 if(length(list.files(pattern="EnvFiltered.txt",full.names=TRUE)) != 1){
   #Read in environmental layers for project.
   EnvironmentalLayers <- raster::stack(Sys.glob("GVTP*.tif"))
+  #names(EnvironmentalLayers) <- gsub("GVTP","",names(EnvironmentalLayers))
   #Remove environmental layers with a high degree of multicollinearity.
   #Using r=0.7 as the cutoff.
-  env.filtered <- removeCollinearity(EnvironmentalLayers,nb.points = 10000,sample.points = T,select.variables = T,multicollinearity.cutoff = 0.7)
+  env.filtered <- removeCollinearity(EnvironmentalLayers,nb.points = 10000,sample.points = T,select.variables = T,multicollinearity.cutoff = 0.7,plot=T)
   env.filtered <- as.data.frame(env.filtered)
   colnames(env.filtered) <- c("Variable")
   #Save filtered list of environmental variables.
@@ -121,50 +122,54 @@ EnvironmentalBackground <- read.table("EnvironmentalBackground.txt", header=TRUE
 env.factors <- c("GVTPGeology","GVTPLandform","GVTPLandCover","GVTPSoilTexture")
 
 #Generate and evaluate MaxEnt species distribution models using randomly subsampled presence/background data.
-XMEvaluations <- data.frame()
-for(i in 1:100){
-  #Randomly subsample observation and background points.
-  sampleNum <- floor(0.8*nrow(EnvironmentalObservations))
-  ObservationsSubsample <- EnvironmentalObservations[sample(nrow(EnvironmentalObservations),sampleNum),]
-  ObservationsSubsample$pa <- 1
-  BackgroundSubsample <- EnvironmentalBackground[sample(nrow(EnvironmentalBackground),10*sampleNum),]
-  BackgroundSubsample$pa <- 0
-  #Create a merged data input and set certain columns to factor.
-  ModelInput <- rbind(ObservationsSubsample,BackgroundSubsample)
-  ModelInput[env.factors] <- lapply(ModelInput[env.factors], factor)
-  #Run Maxent model
-  xm <- dismo::maxent(x=ModelInput[,grep("GVTP",colnames(ModelInput))],p=ModelInput$pa)
-  #Get relative importance of environmental layers.
-  XMImportance <- as.data.frame(plot(xm))
-  XMImportance <- as.data.frame(t(XMImportance))
-  #Evaluate maxent model.
-  exm <- suppressWarnings(evaluate(p=ModelInput[ModelInput$pa==1,grep("GVTP",colnames(ModelInput))],a=ModelInput[ModelInput$pa==0,grep("GVTP",colnames(ModelInput))],model=xm))
-  tmp <- data.frame(matrix(nrow=1,ncol=4))
-  colnames(tmp) <- c("AUC","TSS","r","p")
-  tmp$AUC <- exm@auc
-  #Calculate the true skill statistic
-  a <- mean(exm@TPR,na.rm=T)
-  b <- mean(exm@FPR,na.rm=T)
-  c <- mean(exm@FNR,na.rm=T)
-  d <- mean(exm@TNR,na.rm=T)
-  H <- a/(a+c)
-  F <- b/(b+d)
-  tmp$TSS <- H+F-1
-  tmp$r <- exm@cor
-  tmp$p <- exm@pcor
-  tmp <- cbind(tmp,XMImportance)
-  XMEvaluations <- rbind(XMEvaluations,tmp)
-  print(paste("auc:",tmp$AUC,"TSS:",tmp$TSS,"cor:",tmp$r,"p:",tmp$p)) 
+if(length(list.files(wd,"GVTPModelEvaluationSummary.txt"))<1){
+  XMEvaluations <- data.frame()
+  for(i in 1:100){
+    #Randomly subsample observation and background points.
+    sampleNum <- floor(0.8*nrow(EnvironmentalObservations))
+    ObservationsSubsample <- EnvironmentalObservations[sample(nrow(EnvironmentalObservations),sampleNum),]
+    ObservationsSubsample$pa <- 1
+    BackgroundSubsample <- EnvironmentalBackground[sample(nrow(EnvironmentalBackground),10*sampleNum),]
+    BackgroundSubsample$pa <- 0
+    #Create a merged data input and set certain columns to factor.
+    ModelInput <- rbind(ObservationsSubsample,BackgroundSubsample)
+    ModelInput[env.factors] <- lapply(ModelInput[env.factors], factor)
+    #Run Maxent model
+    xm <- dismo::maxent(x=ModelInput[,grep("GVTP",colnames(ModelInput))],p=ModelInput$pa,factors=env.factors)
+    #Get relative importance of environmental layers.
+    XMImportance <- as.data.frame(plot(xm))
+    XMImportance <- as.data.frame(t(XMImportance))
+    #Evaluate maxent model.
+    exm <- suppressWarnings(evaluate(p=ModelInput[ModelInput$pa==1,grep("GVTP",colnames(ModelInput))],a=ModelInput[ModelInput$pa==0,grep("GVTP",colnames(ModelInput))],model=xm))
+    tmp <- data.frame(matrix(nrow=1,ncol=4))
+    colnames(tmp) <- c("AUC","TSS","r","p")
+    tmp$AUC <- exm@auc
+    #Calculate the true skill statistic
+    a <- mean(exm@TPR,na.rm=T)
+    b <- mean(exm@FPR,na.rm=T)
+    c <- mean(exm@FNR,na.rm=T)
+    d <- mean(exm@TNR,na.rm=T)
+    H <- a/(a+c)
+    F <- b/(b+d)
+    tmp$TSS <- H+F-1
+    tmp$r <- exm@cor
+    tmp$p <- exm@pcor
+    tmp <- cbind(tmp,XMImportance)
+    XMEvaluations <- rbind(XMEvaluations,tmp)
+    print(paste("auc:",tmp$AUC,"TSS:",tmp$TSS,"cor:",tmp$r,"p:",tmp$p)) 
+  }
+  #Summarize model evaluations.
+  XMEvaluationsSD <- XMEvaluations %>% dplyr::summarise_if(is.numeric, sd)
+  rownames(XMEvaluationsSD) <- c("Standard Deviation (% Importance)")
+  XMEvaluationsMean <- XMEvaluations %>% dplyr::summarise_if(is.numeric, mean)
+  rownames(XMEvaluationsMean) <- c("Mean (% Importance")
+  XMEvaluationsSummary <- rbind(XMEvaluationsMean,XMEvaluationsSD)
+  colnames(XMEvaluationsSummary) <- gsub(x = colnames(XMEvaluationsSummary), pattern = "\\GVTP", replacement = "")
+  XMEvaluationsSummary <- as.data.frame(t(XMEvaluationsSummary))
+  write.table(XMEvaluationsSummary,"GVTPModelEvaluationSummary.txt",quote=FALSE,sep="\t",row.names = TRUE)
 }
-#Summarize model evaluations.
-XMEvaluationsSD <- XMEvaluations %>% dplyr::summarise_if(is.numeric, sd)
-rownames(XMEvaluationsSD) <- c("Standard Deviation (% Importance)")
-XMEvaluationsMean <- XMEvaluations %>% dplyr::summarise_if(is.numeric, mean)
-rownames(XMEvaluationsMean) <- c("Mean (% Importance")
-XMEvaluationsSummary <- rbind(XMEvaluationsMean,XMEvaluationsSD)
-colnames(XMEvaluationsSummary) <- gsub(x = colnames(XMEvaluationsSummary), pattern = "\\GVTP", replacement = "")
-XMEvaluationsSummary <- as.data.frame(t(XMEvaluationsSummary))
-write.table(XMEvaluationsSummary,"GVTPModelEvaluationSummary.txt",quote=FALSE,sep="\t",row.names = TRUE)
+XMEvaluationsSummary <- read.table("GVTPModelEvaluationSummary.txt", header=TRUE, sep="\t",as.is=T,skip=0,fill=TRUE,check.names=FALSE,quote="", encoding = "UTF-8")
+
 #Plot percent relative importance
 require(ggplot2)
 tmp <- XMEvaluationsSummary
@@ -180,10 +185,15 @@ ggplot(tmp,aes(x=Variable,y=Mean))+
   xlab("Environmental variables")+ylab("Percent relative importances")+
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),strip.background=element_blank(),strip.text.x=element_blank(),legend.position = "none")
 
+#Run Maxent model
+EnvironmentalObservations$pa <- 1
+EnvironmentalBackground$pa <- 0
+ModelInput <- rbind(EnvironmentalObservations,EnvironmentalBackground)
+xm <- dismo::maxent(x=ModelInput[,grep("GVTP",colnames(ModelInput))],p=ModelInput$pa,factors=env.factors)
 #Evaluate maxent model.
-exm <- suppressWarnings(evaluate(EnvironmentalObservations[,c("lon","lat")],EnvironmentalBackground[,c("lon","lat")],xm,EnvironmentalLayers))
+exm <- suppressWarnings(dismo::evaluate(EnvironmentalObservations[,c("lon","lat")],EnvironmentalBackground[,c("lon","lat")],xm,EnvironmentalLayers))
 #Evaluate probability threshold of species detection
-bc.threshold <- threshold(x = exm, stat = "spec_sens")
+bc.threshold <- dismo::threshold(x = exm, stat = "spec_sens")
 #Generate prediction maps for the Gaviota tarplant, both presence/absence and by probability of observations.
 r <- dismo::predict(object=xm,x=EnvironmentalLayers,progress='text')
 #r <- dismo::predict(object=xm,x=test,progress='text')
@@ -203,9 +213,9 @@ require(viridis)
 require(ggrastr)
 MapDF <- as.data.frame(raster::raster("GVTP_PresenceAbsenceEPSG4326.tif"),xy=T, na.rm=T)
 MapDF <- as.data.frame(raster::rasterToPoints(raster::raster("GVTP_PresenceAbsenceEPSG4326.tif")))
-colnames(MapDF) <-c ("longitude","latitude","Presence")
-MapCoordinates <- MapCoordinates[seq(1,nrow(MapCoordinates),floor(nrow(MapCoordinates)/100000)),]
-ggmap(get_stamenmap(bbox = c(left=as.numeric(bbox[1])-buffer,bottom=as.numeric(bbox[2])-buffer,right=as.numeric(bbox[3])+buffer,top=as.numeric(bbox[4])+buffer),zoom=8,maptype="terrain-background"))+
+colnames(MapDF) <-c ("Presence","longitude","latitude")
+MapCoordinates <- MapDF[seq(1,nrow(MapDF),floor(nrow(MapDF)/100000)),]
+ggmap(get_stamenmap(bbox = c(left=min(MapCoordinates$longitude)-buffer,bottom=min(MapCoordinates$latitude)-buffer,right=max(MapCoordinates$longitude)+buffer,top=max(MapCoordinates$latitude)+buffer),zoom=8,maptype="terrain-background"))+
   geom_point(data=MapCoordinates,aes(x=longitude,y=latitude,color=Presence))+
   labs(title="Gaviota tarplant suitable habitat",x="longitude",y="latitude")+
   theme(legend.position="none")+
@@ -222,3 +232,50 @@ ggmap(get_stamenmap(bbox = c(left=as.numeric(bbox[1])-buffer,bottom=as.numeric(b
   labs(title="Gaviota tarplant observation areas",x="longitude",y="latitude",fill='OBJECTID')+
   theme(legend.position="none")+
   coord_sf(crs = st_crs(4326))
+
+
+#Generate partial response plots of importance variables in Gaviota tarplant SDM.
+require(zoo)
+require(ggplot2)
+#Partial response plot of geology
+test <- as.data.frame(response(x=xm,var="GVTPGeology"))
+test <- as.data.frame(approx(x=test$V1,y=test$p,xout=1:68))
+test <- dplyr::mutate(test,y=na.spline(y))
+GeologyCategories <- read.table("GeologyMetadata.tsv", header=TRUE, sep="\t",as.is=T,skip=0,fill=TRUE,check.names=FALSE,quote="", encoding = "UTF-8")
+test <- dplyr::left_join(test,GeologyCategories,by=c("x"="GeologicalCategoryNumber"))
+test <- dplyr::arrange(test,y) %>%
+  mutate(name=factor(GeologicalCategory,levels=GeologicalCategory))
+ggplot(test,aes(x=name,y=y))+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab("Geological categories")+ylab("Probability of suitable habitat being observed")+
+  ggtitle("Probability of suitable habitat for Gaviota tarplant\nbeing observed by geological category")+geom_point()
+#Partial response of interannual cloud cover.
+test <- as.data.frame(response(x=xm,var="GVTPInterAnnualCloudCover"))
+ggplot(test,aes(x=V1,y=p))+geom_line()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab("Interannual cloud cover\nMean of the 12 monthly standard deviations on % cloud cover")+ylab("Probability of suitable habitat being observed")+
+  ggtitle("Probability of suitable habitat for Gaviota tarplant\nbeing observed by interannual cloud cover")
+#Partial response plot of bioclim3
+test <- as.data.frame(response(x=xm,var="GVTPBioclim3"))
+ggplot(test,aes(x=V1,y=p))+geom_line()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab("Isothermality (%)\nMean Diurnal Temperature Range / Mean Annual Temperature Range")+ylab("Probability of suitable habitat being observed")+
+  ggtitle("Probability of suitable habitat for Gaviota tarplant\nbeing observed by isothermality")
+#Partial response plot of bioclim3
+test <- as.data.frame(response(x=xm,var="GVTPBioclim12"))
+ggplot(test,aes(x=V1,y=p))+geom_line()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab("Annual precipitation (mm water)")+ylab("Probability of suitable habitat being observed")+
+  ggtitle("Probability of suitable habitat for Gaviota tarplant\nbeing observed by annual rainfall") 
+#Partial response plot of landform
+test <- as.data.frame(response(x=xm,var="GVTPLandform"))
+test <- as.data.frame(approx(x=test$V1,y=test$p,xout=seq(1000,9000,1000)))
+test <- dplyr::mutate(test,y=na.spline(y))
+LandformCategories <- read.table("Landforms.csv", header=TRUE, sep=",",as.is=T,skip=0,fill=TRUE,check.names=FALSE,quote="", encoding = "UTF-8")
+test <- dplyr::left_join(test,LandformCategories,by=c("x"="Value"))
+test <- dplyr::arrange(test,y) %>%
+  mutate(name=factor(Landform,levels=Landform))
+ggplot(test,aes(x=name,y=y))+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  xlab("Landform categories")+ylab("Probability of suitable habitat being observed")+
+  ggtitle("Probability of suitable habitat for Gaviota tarplant\nbeing observed by landform category")+geom_point()
